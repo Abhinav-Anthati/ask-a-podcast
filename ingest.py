@@ -46,22 +46,44 @@ def chunk_transcript(transcript, episode_id, target_words=300, overlap_words=50)
     return chunks
 
 
-# def ingest_all():
-#     model = SentenceTransformer("all-MiniLM-L6-v2")
+def ingest_all():
+    model = SentenceTransformer("all-MiniLM-L6-v2")
     
-#     conn = psycopg2.connect(
-#         dbname="podcasts", user="postgres", password="postgres",
-#         host="localhost", post=5432
-#     )
-                         
-if __name__ == "__main__":
-    all_chunks = []
+    conn = psycopg2.connect(
+        dbname="podcasts", user="postgres", password="postgres",
+        host="localhost", port=5432
+    )
+    cur = conn.cursor()
+    
     for filename in os.listdir("transcripts"):
         if not filename.endswith(".json"):
             continue
+        
         with open(f"transcripts/{filename}") as f:
             transcript = json.load(f)
+        
         episode_id = filename.replace(".json", "")
         chunks = chunk_transcript(transcript, episode_id)
-        print(f"{episode_id}: {len(chunks)} chunks")
-        all_chunks.extend(chunks)
+
+        texts = [c["text"] for c in chunks]
+        embeddings = model.encode(texts)
+        
+        for chunk, embedding in zip(chunks, embeddings):
+            cur.execute(
+                """
+                INSERT INTO chunks (embedding, text, start_time, end_time, episode_id)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (str(embedding.tolist()), chunk["text"], chunk["start_time"], chunk["end_time"], chunk["episode_id"])
+            )
+        
+        print(f"{episode_id}: inserted {len(chunks)} chunks")
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    print("Ingestion complete.")
+                         
+                         
+if __name__ == "__main__":
+    ingest_all()
