@@ -1,5 +1,8 @@
 import os
 import json
+import psycopg2
+from sentence_transformers import SentenceTransformer
+
 
 def chunk_transcript(transcript, episode_id, target_words=300, overlap_words=50):
     chunks = []
@@ -41,6 +44,15 @@ def chunk_transcript(transcript, episode_id, target_words=300, overlap_words=50)
         })
     
     return chunks
+
+
+# def ingest_all():
+#     model = SentenceTransformer("all-MiniLM-L6-v2")
+    
+#     conn = psycopg2.connect(
+#         dbname="podcasts", user="postgres", password="postgres",
+#         host="localhost", post=5432
+#     )
                          
 if __name__ == "__main__":
     all_chunks = []
