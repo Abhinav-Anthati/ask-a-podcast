@@ -25,9 +25,11 @@ if __name__ == "__main__":
     model = WhisperModel("base", device="cpu", compute_type="int8")
 
     os.makedirs("transcripts", exist_ok=True)
-    
+    transcripts = os.listdir("transcripts")
     for filename in os.listdir("episodes"):
         if filename.endswith(".mp3"):
+            if filename.replace(".mp3", ".json") in transcripts:
+                continue
             print(f"Transcribing {filename}...")
             result = transcribe_episode(f"episodes/{filename}", model)
 

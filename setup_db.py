@@ -18,6 +18,13 @@ cur.execute("""
     )        
 """)
 
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS episodes (
+        episode_id TEXT PRIMARY KEY,
+        title TEXT
+    )
+""")
+
 conn.commit()
 cur.close()
 conn.close()
