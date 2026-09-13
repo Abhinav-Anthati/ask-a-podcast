@@ -5,15 +5,6 @@ from sentence_transformers import SentenceTransformer
 import requests
 
 
-def get_episode_title(episode_id):
-    url = f"https://www.youtube.com/watch?v={episode_id}"
-    response = requests.get(
-        "https://www.youtube.com/oembed",
-        params={"url": url, "format": "json"}
-    )
-    return response.json().get("title", episode_id)
-
-
 def count_tokens(text, tokenizer):
     return len(tokenizer.encode(text))
 
@@ -70,7 +61,7 @@ def ingest_all():
     )
     cur = conn.cursor()
     
-    cur.execute("SELECT episode_id FROM episodes")
+    cur.execute("SELECT id FROM episodes")
     existing_ids = {row[0] for row in cur.fetchall()}
 
     for filename in os.listdir("transcripts"):
@@ -84,11 +75,6 @@ def ingest_all():
 
         with open(f"transcripts/{filename}") as f:
             transcript = json.load(f)
-        
-        cur.execute("""
-            INSERT INTO episodes (episode_id, title) 
-            VALUES (%s, %s) ON CONFLICT (episode_id) DO NOTHING
-        """, (episode_id, get_episode_title(episode_id)))
         
         chunks = chunk_transcript(transcript, episode_id, tokenizer)
 
@@ -111,6 +97,28 @@ def ingest_all():
     conn.close()
     print("Ingestion complete.")
 
+
+def ingest_episode(episode, model, cur):
+    tokenizer = model.tokenizer
+
+    with open(f"transcripts/{episode['guid']}.json") as f:
+        transcript = json.load(f)
+
+    chunks = chunk_transcript(transcript, episode["guid"], tokenizer)
+    texts = [c["text"] for c in chunks]
+    embeddings = model.encode(texts)
+
+    for chunk, embedding in zip(chunks, embeddings):
+        cur.execute(
+            """
+            INSERT INTO chunks (embedding, text, start_time, end_time, episode_id)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (str(embedding.tolist()), chunk["text"], chunk["start_time"], chunk["end_time"], chunk["episode_id"])
+        )
+
+    print(f"{episode['guid']}: inserted {len(chunks)} chunks")
+    
 
 if __name__ == "__main__":
     ingest_all()
