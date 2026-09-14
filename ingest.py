@@ -104,9 +104,14 @@ def ingest_episode(episode, model, cur):
     with open(f"transcripts/{episode['guid']}.json") as f:
         transcript = json.load(f)
 
+    print("Chunking...")
     chunks = chunk_transcript(transcript, episode["guid"], tokenizer)
+    print(f"Chunked into {len(chunks)} pieces")
+
     texts = [c["text"] for c in chunks]
+    print("Embedding...")
     embeddings = model.encode(texts)
+    print("Embedded")
 
     for chunk, embedding in zip(chunks, embeddings):
         cur.execute(

@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -6,6 +6,9 @@ from sentence_transformers import SentenceTransformer
 import psycopg2
 import requests
 import json
+from pipeline import sync_and_ingest
+from apscheduler.schedulers.background import BackgroundScheduler
+
 
 app = FastAPI()
 app.add_middleware(
@@ -20,6 +23,9 @@ model = SentenceTransformer("all-MiniLM-L6-v2")
 
 class Question(BaseModel):
     question: str
+    
+class FeedURL(BaseModel):
+    feed_url: str
 
 
 def get_connection():
@@ -46,6 +52,25 @@ def stream_response(prompt, citations_list):
     for piece in stream_answer(prompt):
         yield json.dumps({"type": "token", "text": piece}) + "\n"
 
+
+def check_all_podcasts():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT url 
+        FROM podcasts
+        """
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    
+    for row in rows:
+        sync_and_ingest(row[0])
+    
+    
+
 @app.post("/ask")
 def ask(payload: Question):
     question_embedding = model.encode(payload.question)
@@ -53,9 +78,9 @@ def ask(payload: Question):
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT chunks.text, chunks.start_time, chunks.episode_id, episodes.title
+        SELECT chunks.text, chunks.start_time, chunks.episode_id, episodes.title, episodes.url
         FROM chunks JOIN episodes
-        ON chunks.episode_id = episodes.episode_id
+        ON chunks.episode_id = episodes.id
         ORDER BY embedding <=> %s::vector
         LIMIT 5
         """,
@@ -67,14 +92,14 @@ def ask(payload: Question):
     
     context_string = ""
     citations_list = []
-    for text, start_time, episode_id, title in rows:
+    for text, start_time, episode_id, title, episode_url in rows:
         context_string += f"[ID: {episode_id}, Title: {title}, starts at {start_time:.0f}s]\n{text}\n\n"
         citations_list.append({
             "episode_id": episode_id,
             "title": title,
             "start_time": start_time,
             "text": text,
-            "url": f"https://www.youtube.com/watch?v={episode_id}&t={int(start_time)}s"
+            "url": episode_url
         })
     
     prompt = f"""Answer the question using only the context below. Be concise.
@@ -88,3 +113,36 @@ def ask(payload: Question):
 
     return StreamingResponse(stream_response(prompt, citations_list), media_type="text/plain")
     
+
+@app.post("/podcasts")
+def subscribe(payload: FeedURL, background_tasks: BackgroundTasks):
+    background_tasks.add_task(sync_and_ingest, payload.feed_url)
+    return {"status": "syncing"}
+
+@app.get("/podcasts")
+def get_podcast():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT url, title 
+        FROM podcasts
+        """
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    
+    podcast_list = []
+    for url, title in rows:
+        podcast_list.append({
+            "url": url,
+            "title": title,
+        })
+    
+    return podcast_list
+
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(check_all_podcasts, "interval", hours=24)
+scheduler.start()

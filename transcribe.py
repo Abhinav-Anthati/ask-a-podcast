@@ -2,8 +2,8 @@ from faster_whisper import WhisperModel
 import json
 import os
 
-def transcribe_episode(audio_path, model: WhisperModel):
-    segments, info = model.transcribe(audio_path, word_timestamps=True)
+def transcribe_episode(episode, model: WhisperModel):
+    segments, info = model.transcribe(episode["path"], word_timestamps=True)
     
     segment_list = []
     for segment in segments:
@@ -15,7 +15,7 @@ def transcribe_episode(audio_path, model: WhisperModel):
         })
     
     return {
-        "audio_path": audio_path,
+        "audio_path": episode["path"],
         "language": info.language,
         "duration": info.duration,
         "segments": segment_list

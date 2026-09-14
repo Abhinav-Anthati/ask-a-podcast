@@ -4,13 +4,6 @@ from requests import RequestException
 import psycopg2
 
 
-def get_connection():
-    return psycopg2.connect(
-        dbname="podcasts", user="postgres", password="postgres",
-        host="localhost", port=5432
-    )
-
-
 def get_episodes(feed):
     episodes = []
     for episode in feed.entries:
@@ -24,18 +17,15 @@ def get_episodes(feed):
 
 
 def download_episode(audio_url: str, output_path: str):
-    print(f"Downloading {output_path} ...")
+    print(f"Downloading {output_path}")
     response = requests.get(audio_url, stream=True)
     with open(output_path, "wb") as f:
         for chunk in response.iter_content(chunk_size=8192):
             f.write(chunk)
             
 
-def sync_podcast(feed_url: str):
+def sync_podcast(feed_url: str, cur):
     feed = feedparser.parse(feed_url)
-   
-    conn = get_connection()
-    cur = conn.cursor()
     
     cur.execute(
         """
@@ -59,7 +49,6 @@ def sync_podcast(feed_url: str):
         
         local_path = f"episodes/{episode['guid']}.mp3"
         
-        
         try:
             download_episode(episode["href"], local_path)
         except RequestException as e:
@@ -76,10 +65,6 @@ def sync_podcast(feed_url: str):
         
         episode["path"] = local_path
         new_episodes.append(episode)
-    
-    conn.commit()
-    cur.close()
-    conn.close()
 
     print(f"Downloaded {len(new_episodes)} new episodes.")
     return new_episodes
