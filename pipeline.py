@@ -25,6 +25,8 @@ def sync_and_ingest(feed_url):
     episodes = sync_podcast(feed_url, cur)
     conn.commit()
 
+    yield json.dumps({"status": "found", "count": len(episodes)}) + "\n"
+
     for episode in episodes:
         try:
             result = transcribe_episode(episode, whisper_model)
@@ -32,18 +34,23 @@ def sync_and_ingest(feed_url):
             out_name = f"transcripts/{episode['guid']}.json"
             with open(out_name, "w") as f:
                 json.dump(result, f, indent=2)
-            print(f"Transcribed {out_name} - {len(result['segments'])} segments, {result['duration']:.1f}s")
-            
+            yield json.dumps({"status": "transcribed", "episode": episode["guid"]}) + "\n"
+
             ingest_episode(episode, embed_model, cur)
             conn.commit()
+            yield json.dumps({"status": "ingested", "episode": episode["guid"]}) + "\n"
 
         except Exception as e:
-            print(f"Failed to process {episode['guid']}: {e}")
+            yield json.dumps({"status": "failed", "episode": episode["guid"], "error": str(e)}) + "\n"
             conn.rollback()
             continue
 
     cur.close()
     conn.close()
 
+    yield json.dumps({"status": "done"}) + "\n"
+
+
 if __name__ == "__main__":
-    sync_and_ingest("https://feeds.npr.org/500005/podcast.xml")
+    for update in sync_and_ingest("https://feeds.npr.org/500005/podcast.xml"):
+        print(update)

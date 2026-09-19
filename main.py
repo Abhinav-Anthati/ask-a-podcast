@@ -1,4 +1,4 @@
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -66,8 +66,9 @@ def check_all_podcasts():
     cur.close()
     conn.close()
     
-    for row in rows:
-        sync_and_ingest(row[0])
+    for (url,) in rows:
+        for _ in sync_and_ingest(url):
+            pass
     
     
 
@@ -115,9 +116,8 @@ def ask(payload: Question):
     
 
 @app.post("/podcasts")
-def subscribe(payload: FeedURL, background_tasks: BackgroundTasks):
-    background_tasks.add_task(sync_and_ingest, payload.feed_url)
-    return {"status": "syncing"}
+def subscribe(payload: FeedURL):
+    return StreamingResponse(sync_and_ingest(payload.feed_url),media_type="text/plain")
 
 @app.get("/podcasts")
 def get_podcast():

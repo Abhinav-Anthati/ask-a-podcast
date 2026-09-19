@@ -27,6 +27,9 @@ def download_episode(audio_url: str, output_path: str):
 def sync_podcast(feed_url: str, cur):
     feed = feedparser.parse(feed_url)
     
+    cur.execute("SELECT COUNT(*) FROM episodes WHERE podcast_url = %s", (feed_url,))
+    is_first_sync = cur.fetchone()[0] == 0
+    
     cur.execute(
         """
         INSERT INTO podcasts (url, title) 
