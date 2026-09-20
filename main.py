@@ -70,6 +70,7 @@ def check_all_podcasts():
         """
         SELECT url 
         FROM podcasts
+        WHERE subscribed = TRUE
         """
     )
     rows = cur.fetchall()
@@ -146,6 +147,7 @@ def get_podcast():
         SELECT podcasts.url, podcasts.title, COUNT(episodes.id) AS episode_count
         FROM podcasts
         LEFT JOIN episodes ON podcasts.url = episodes.podcast_url
+        WHERE podcasts.subscribed = TRUE
         GROUP BY podcasts.url, podcasts.title
         """
     )
@@ -168,6 +170,20 @@ def get_podcast():
 def backfill(payload: FeedURL, background_tasks: BackgroundTasks):
     background_tasks.add_task(backfill_podcast, payload.feed_url)
     return {"status": "backfilling"}
+
+
+@app.delete("/podcasts/unsubscribe")
+def unsubscribe(payload: FeedURL):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE podcasts SET subscribed = FALSE WHERE url = %s",
+        (payload.feed_url,)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"status": "unsubscribed"}
 
 
 scheduler = BackgroundScheduler()

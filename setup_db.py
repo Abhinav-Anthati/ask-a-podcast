@@ -22,6 +22,10 @@ cur.execute("""
 """)
 
 cur.execute("""
+    ALTER TABLE podcasts ADD COLUMN IF NOT EXISTS subscribed BOOLEAN DEFAULT TRUE
+""")
+
+cur.execute("""
     CREATE TABLE IF NOT EXISTS episodes (
         id TEXT PRIMARY KEY,
         title TEXT,
