@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -6,7 +6,7 @@ from sentence_transformers import SentenceTransformer
 import psycopg2
 import requests
 import json
-from pipeline import sync_and_ingest
+from pipeline import sync_and_ingest, backfill_podcast
 from apscheduler.schedulers.background import BackgroundScheduler
 
 
@@ -23,6 +23,7 @@ model = SentenceTransformer("all-MiniLM-L6-v2")
 
 class Question(BaseModel):
     question: str
+    podcast_url: str | None = None
     
 class FeedURL(BaseModel):
     feed_url: str
@@ -70,23 +71,27 @@ def check_all_podcasts():
         for _ in sync_and_ingest(url):
             pass
     
-    
 
 @app.post("/ask")
 def ask(payload: Question):
     question_embedding = model.encode(payload.question)
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(
-        """
+    
+    query = """
         SELECT chunks.text, chunks.start_time, chunks.episode_id, episodes.title, episodes.url
-        FROM chunks JOIN episodes
-        ON chunks.episode_id = episodes.id
-        ORDER BY embedding <=> %s::vector
-        LIMIT 5
-        """,
-        (str(question_embedding.tolist()),)
-    )
+        FROM chunks JOIN episodes ON chunks.episode_id = episodes.id
+    """
+    params = []
+
+    if payload.podcast_url:
+        query += " WHERE episodes.podcast_url = %s"
+        params.append(payload.podcast_url)
+
+    query += " ORDER BY embedding <=> %s::vector LIMIT 5"
+    params.append(str(question_embedding.tolist()))
+
+    cur.execute(query, tuple(params))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -119,6 +124,7 @@ def ask(payload: Question):
 def subscribe(payload: FeedURL):
     return StreamingResponse(sync_and_ingest(payload.feed_url),media_type="text/plain")
 
+
 @app.get("/podcasts")
 def get_podcast():
     conn = get_connection()
@@ -141,6 +147,12 @@ def get_podcast():
         })
     
     return podcast_list
+
+
+@app.post("/podcasts/backfill")
+def backfill(payload: FeedURL, background_tasks: BackgroundTasks):
+    background_tasks.add_task(backfill_podcast, payload.feed_url)
+    return {"status": "backfilling"}
 
 
 scheduler = BackgroundScheduler()

@@ -3,7 +3,9 @@ import json
 import os
 
 def transcribe_episode(episode, model: WhisperModel):
+    print("Transcribing...")
     segments, info = model.transcribe(episode["path"], word_timestamps=True)
+    print("Transcribed")
     
     segment_list = []
     for segment in segments:

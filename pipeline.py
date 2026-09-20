@@ -22,10 +22,16 @@ def sync_and_ingest(feed_url):
     )
     cur = conn.cursor()
 
-    episodes = sync_podcast(feed_url, cur)
+    episodes = None
+    for update in sync_podcast(feed_url, cur):
+        if update["status"] == "episodes_ready":
+            episodes = update["episodes"]
+        else:
+            yield json.dumps(update) + "\n"
+    
     conn.commit()
 
-    yield json.dumps({"status": "found", "count": len(episodes)}) + "\n"
+    yield json.dumps({"status": "downloaded", "count": len(episodes)}) + "\n"
 
     for episode in episodes:
         try:
@@ -49,7 +55,17 @@ def sync_and_ingest(feed_url):
     conn.close()
 
     yield json.dumps({"status": "done"}) + "\n"
-
+    
+    
+def backfill_podcast(feed_url):
+    count = -1
+    while count != 0:
+        for update in sync_and_ingest(feed_url):
+            data = json.loads(update)
+            if data["status"] == "downloaded":
+                count = data["count"]
+        print(f"Backfill round complete for {feed_url}: {count} new episodes")
+            
 
 if __name__ == "__main__":
     for update in sync_and_ingest("https://feeds.npr.org/500005/podcast.xml"):

@@ -27,9 +27,6 @@ def download_episode(audio_url: str, output_path: str):
 def sync_podcast(feed_url: str, cur):
     feed = feedparser.parse(feed_url)
     
-    cur.execute("SELECT COUNT(*) FROM episodes WHERE podcast_url = %s", (feed_url,))
-    is_first_sync = cur.fetchone()[0] == 0
-    
     cur.execute(
         """
         INSERT INTO podcasts (url, title) 
@@ -45,13 +42,19 @@ def sync_podcast(feed_url: str, cur):
     cur.execute("SELECT id FROM episodes")
     existing_episodes = {row[0] for row in cur.fetchall()}
     
+    MAX_PER_SYNC = 3
+
     new_episodes = []
     for episode in episodes:
+        if len(new_episodes) >= MAX_PER_SYNC:
+            break
+
         if episode["guid"] in existing_episodes:
             continue
         
         local_path = f"episodes/{episode['guid']}.mp3"
         
+        yield {"status": "downloading", "episode": episode["guid"]}
         try:
             download_episode(episode["href"], local_path)
         except RequestException as e:
@@ -70,7 +73,7 @@ def sync_podcast(feed_url: str, cur):
         new_episodes.append(episode)
 
     print(f"Downloaded {len(new_episodes)} new episodes.")
-    return new_episodes
+    yield {"status": "episodes_ready", "episodes": new_episodes}
      
 if __name__ == "__main__":
     sync_podcast("https://feeds.npr.org/500005/podcast.xml")
