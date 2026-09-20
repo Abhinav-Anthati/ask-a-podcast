@@ -33,7 +33,7 @@ def sync_podcast(feed_url: str, cur):
         """
         INSERT INTO podcasts (url, title) 
         VALUES (%s, %s)
-        ON CONFLICT (url) DO NOTHING
+        ON CONFLICT (url) DO UPDATE SET subscribed = TRUE
         """,
         (feed_url, feed.feed.title)
     )

@@ -93,12 +93,15 @@ def ask(payload: Question):
     
     query = """
         SELECT chunks.text, chunks.start_time, chunks.episode_id, episodes.title, episodes.url
-        FROM chunks JOIN episodes ON chunks.episode_id = episodes.id
+        FROM chunks 
+        JOIN episodes ON chunks.episode_id = episodes.id
+        JOIN podcasts ON episodes.podcast_url = podcasts.url
+        WHERE podcasts.subscribed = TRUE
     """
     params = []
 
     if payload.podcast_url:
-        query += " WHERE episodes.podcast_url = %s"
+        query += " AND episodes.podcast_url = %s"
         params.append(payload.podcast_url)
 
     query += " ORDER BY embedding <=> %s::vector LIMIT 5"
@@ -172,7 +175,7 @@ def backfill(payload: FeedURL, background_tasks: BackgroundTasks):
     return {"status": "backfilling"}
 
 
-@app.delete("/podcasts/unsubscribe")
+@app.delete("/podcasts")
 def unsubscribe(payload: FeedURL):
     conn = get_connection()
     cur = conn.cursor()
