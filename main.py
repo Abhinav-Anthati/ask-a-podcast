@@ -143,8 +143,10 @@ def get_podcast():
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT url, title 
+        SELECT podcasts.url, podcasts.title, COUNT(episodes.id) AS episode_count
         FROM podcasts
+        LEFT JOIN episodes ON podcasts.url = episodes.podcast_url
+        GROUP BY podcasts.url, podcasts.title
         """
     )
     rows = cur.fetchall()
@@ -152,10 +154,11 @@ def get_podcast():
     conn.close()
     
     podcast_list = []
-    for url, title in rows:
+    for url, title, episode_count in rows:
         podcast_list.append({
             "url": url,
             "title": title,
+            "episode_count": episode_count,
         })
     
     return podcast_list
