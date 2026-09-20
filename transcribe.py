@@ -5,7 +5,6 @@ import os
 def transcribe_episode(episode, model: WhisperModel):
     print("Transcribing...")
     segments, info = model.transcribe(episode["path"], word_timestamps=True)
-    print("Transcribed")
     
     segment_list = []
     for segment in segments:
@@ -15,6 +14,8 @@ def transcribe_episode(episode, model: WhisperModel):
             "text": segment.text,
             "words": [{"word": w.word, "start": w.start, "end": w.end} for w in segment.words]
         })
+        
+    print("Transcribed")
     
     return {
         "audio_path": episode["path"],

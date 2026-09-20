@@ -3,6 +3,7 @@ import json
 import psycopg2
 from sentence_transformers import SentenceTransformer
 import requests
+from tracing import tracer
 
 
 def count_tokens(text, tokenizer):
@@ -105,12 +106,14 @@ def ingest_episode(episode, model, cur):
         transcript = json.load(f)
 
     print("Chunking...")
-    chunks = chunk_transcript(transcript, episode["guid"], tokenizer)
+    with tracer.start_as_current_span("chunk_transcript"):
+        chunks = chunk_transcript(transcript, episode["guid"], tokenizer)
     print(f"Chunked into {len(chunks)} pieces")
 
     texts = [c["text"] for c in chunks]
     print("Embedding...")
-    embeddings = model.encode(texts)
+    with tracer.start_as_current_span("model.encode"):
+        embeddings = model.encode(texts)
     print("Embedded")
 
     for chunk, embedding in zip(chunks, embeddings):

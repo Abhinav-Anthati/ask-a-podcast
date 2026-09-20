@@ -10,6 +10,7 @@ from faster_whisper import WhisperModel
 from sentence_transformers import SentenceTransformer
 import psycopg2
 import json
+from tracing import tracer
 
 
 def sync_and_ingest(feed_url):
@@ -35,14 +36,16 @@ def sync_and_ingest(feed_url):
 
     for episode in episodes:
         try:
-            result = transcribe_episode(episode, whisper_model)
+            with tracer.start_as_current_span("transcribe_episode"):
+                result = transcribe_episode(episode, whisper_model)
 
             out_name = f"transcripts/{episode['guid']}.json"
             with open(out_name, "w") as f:
                 json.dump(result, f, indent=2)
             yield json.dumps({"status": "transcribed", "episode": episode["guid"]}) + "\n"
-
-            ingest_episode(episode, embed_model, cur)
+            
+            with tracer.start_as_current_span("ingest_episode"):
+                ingest_episode(episode, embed_model, cur)
             conn.commit()
             yield json.dumps({"status": "ingested", "episode": episode["guid"]}) + "\n"
 

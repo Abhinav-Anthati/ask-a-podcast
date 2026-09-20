@@ -2,7 +2,7 @@ import feedparser
 import requests
 from requests import RequestException
 import psycopg2
-
+from tracing import tracer
 
 def get_episodes(feed):
     episodes = []
@@ -56,7 +56,8 @@ def sync_podcast(feed_url: str, cur):
         
         yield {"status": "downloading", "episode": episode["guid"]}
         try:
-            download_episode(episode["href"], local_path)
+            with tracer.start_as_current_span("download_episode"):
+                download_episode(episode["href"], local_path)
         except RequestException as e:
             print(f"Skipping {episode['guid']} — download failed: {e}")
             continue
