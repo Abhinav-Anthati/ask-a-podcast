@@ -1,25 +1,26 @@
-import os
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-
 from download import sync_podcast
-from transcribe import transcribe_episode
+from transcribe import transcribe_in_subprocess
 from ingest import ingest_episode
-from faster_whisper import WhisperModel
 from sentence_transformers import SentenceTransformer
 import psycopg2
 import json
 from tracing import tracer
+from concurrent.futures import ProcessPoolExecutor
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 
 def sync_and_ingest(feed_url):
-    whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
     embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 
     conn = psycopg2.connect(
-        dbname="podcasts", user="postgres", password="postgres",
-        host="localhost", port=5432
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT")
     )
     cur = conn.cursor()
 
@@ -29,30 +30,32 @@ def sync_and_ingest(feed_url):
             episodes = update["episodes"]
         else:
             yield json.dumps(update) + "\n"
-    
+
     conn.commit()
 
     yield json.dumps({"status": "downloaded", "count": len(episodes)}) + "\n"
 
-    for episode in episodes:
-        try:
-            with tracer.start_as_current_span("transcribe_episode"):
-                result = transcribe_episode(episode, whisper_model)
+    with ProcessPoolExecutor() as executor:
+        for episode in episodes:
+            try:
+                with tracer.start_as_current_span("transcribe_episode"):
+                    future = executor.submit(transcribe_in_subprocess, episode)
+                    result = future.result()
 
-            out_name = f"transcripts/{episode['guid']}.json"
-            with open(out_name, "w") as f:
-                json.dump(result, f, indent=2)
-            yield json.dumps({"status": "transcribed", "episode": episode["guid"]}) + "\n"
-            
-            with tracer.start_as_current_span("ingest_episode"):
-                ingest_episode(episode, embed_model, cur)
-            conn.commit()
-            yield json.dumps({"status": "ingested", "episode": episode["guid"]}) + "\n"
+                out_name = f"transcripts/{episode['guid']}.json"
+                with open(out_name, "w") as f:
+                    json.dump(result, f, indent=2)
+                yield json.dumps({"status": "transcribed", "episode": episode["guid"]}) + "\n"
 
-        except Exception as e:
-            yield json.dumps({"status": "failed", "episode": episode["guid"], "error": str(e)}) + "\n"
-            conn.rollback()
-            continue
+                with tracer.start_as_current_span("ingest_episode"):
+                    ingest_episode(episode, embed_model, cur)
+                conn.commit()
+                yield json.dumps({"status": "ingested", "episode": episode["guid"]}) + "\n"
+
+            except Exception as e:
+                yield json.dumps({"status": "failed", "episode": episode["guid"], "error": str(e)}) + "\n"
+                conn.rollback()
+                continue
 
     cur.close()
     conn.close()

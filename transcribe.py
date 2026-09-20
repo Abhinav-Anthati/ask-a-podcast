@@ -1,6 +1,6 @@
-from faster_whisper import WhisperModel
 import json
 import os
+from faster_whisper import WhisperModel
 
 def transcribe_episode(episode, model: WhisperModel):
     print("Transcribing...")
@@ -23,6 +23,13 @@ def transcribe_episode(episode, model: WhisperModel):
         "duration": info.duration,
         "segments": segment_list
     }
+    
+    
+def transcribe_in_subprocess(episode):
+    from faster_whisper import WhisperModel
+    whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+    return transcribe_episode(episode, whisper_model)
+    
     
 if __name__ == "__main__":
     model = WhisperModel("base", device="cpu", compute_type="int8")

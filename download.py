@@ -1,7 +1,6 @@
 import feedparser
 import requests
 from requests import RequestException
-import psycopg2
 from tracing import tracer
 
 def get_episodes(feed):
@@ -26,6 +25,9 @@ def download_episode(audio_url: str, output_path: str):
 
 def sync_podcast(feed_url: str, cur):
     feed = feedparser.parse(feed_url)
+    if not feed.entries:
+        yield {"status": "failed", "error": "Couldn't find any episodes in this feed"}
+        return
     
     cur.execute(
         """

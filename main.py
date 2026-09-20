@@ -1,4 +1,4 @@
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -8,7 +8,11 @@ import requests
 import json
 from pipeline import sync_and_ingest, backfill_podcast
 from apscheduler.schedulers.background import BackgroundScheduler
+from dotenv import load_dotenv
+import os
+from requests.exceptions import ConnectionError
 
+load_dotenv()
 
 app = FastAPI()
 app.add_middleware(
@@ -31,22 +35,27 @@ class FeedURL(BaseModel):
 
 def get_connection():
     return psycopg2.connect(
-        dbname="podcasts", user="postgres", password="postgres",
-        host="localhost", port=5432
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT")
     )
     
 
 def stream_answer(prompt):
-    response = requests.post(
-        "http://localhost:11434/api/generate",
-        json={"model": "llama3.2:1b", "prompt": prompt, "stream": True},
-        stream=True
-    )
-    for line in response.iter_lines():
-        if line:
-            data = json.loads(line)
-            yield data["response"]
-            
+    try:
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": "llama3.2:1b", "prompt": prompt, "stream": True},
+            stream=True
+        )
+        for line in response.iter_lines():
+            if line:
+                data = json.loads(line)
+                yield data["response"]
+    except ConnectionError:
+        yield "Ollama is down"
             
 def stream_response(prompt, citations_list):
     yield json.dumps({"type": "citations", "data": citations_list}) + "\n"
@@ -74,6 +83,9 @@ def check_all_podcasts():
 
 @app.post("/ask")
 def ask(payload: Question):
+    if not payload.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+    
     question_embedding = model.encode(payload.question)
     conn = get_connection()
     cur = conn.cursor()
