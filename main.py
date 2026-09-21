@@ -11,6 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 import os
 from requests.exceptions import ConnectionError
+from hybrid_search import rebuild_bm25_index, search_bm25, reciprocal_rank_fusion
 
 load_dotenv()
 
@@ -81,6 +82,14 @@ def check_all_podcasts():
         for _ in sync_and_ingest(url):
             pass
     
+    
+def rebuild_index_job():
+    conn = get_connection()
+    cur = conn.cursor()
+    rebuild_bm25_index(cur)
+    cur.close()
+    conn.close()
+    
 
 @app.post("/ask")
 def ask(payload: Question):
@@ -92,8 +101,8 @@ def ask(payload: Question):
     cur = conn.cursor()
     
     query = """
-        SELECT chunks.text, chunks.start_time, chunks.episode_id, episodes.title, episodes.url
-        FROM chunks 
+        SELECT chunks.id
+        FROM chunks
         JOIN episodes ON chunks.episode_id = episodes.id
         JOIN podcasts ON episodes.podcast_url = podcasts.url
         WHERE podcasts.subscribed = TRUE
@@ -104,17 +113,40 @@ def ask(payload: Question):
         query += " AND episodes.podcast_url = %s"
         params.append(payload.podcast_url)
 
-    query += " ORDER BY embedding <=> %s::vector LIMIT 5"
+    query += " ORDER BY embedding <=> %s::vector LIMIT 10"
     params.append(str(question_embedding.tolist()))
 
     cur.execute(query, tuple(params))
-    rows = cur.fetchall()
+    
+    vector_ids = [row[0] for row in cur.fetchall()]
+    bm25_ids = search_bm25(payload.question, top_k=10)
+    
+    fused_ids = reciprocal_rank_fusion(vector_ids, bm25_ids)[:5]
+    
+    if not fused_ids:
+        return StreamingResponse(
+            stream_response("No relevant context found.", []),
+            media_type="text/plain"
+        )
+    
+    cur.execute(
+        """
+        SELECT chunks.id, chunks.text, chunks.start_time, chunks.episode_id, episodes.title, episodes.url
+        FROM chunks
+        JOIN episodes ON chunks.episode_id = episodes.id
+        WHERE chunks.id IN %s
+        """,
+        (tuple(fused_ids),)
+    )
+    rows_by_id = {row[0]: row for row in cur.fetchall()}
+    rows = [rows_by_id[chunk_id] for chunk_id in fused_ids if chunk_id in rows_by_id]
+    
     cur.close()
     conn.close()
     
     context_string = ""
     citations_list = []
-    for text, start_time, episode_id, title, episode_url in rows:
+    for chunk_id, text, start_time, episode_id, title, episode_url in rows:
         context_string += f"[ID: {episode_id}, Title: {title}, starts at {start_time:.0f}s]\n{text}\n\n"
         citations_list.append({
             "episode_id": episode_id,
@@ -189,6 +221,9 @@ def unsubscribe(payload: FeedURL):
     return {"status": "unsubscribed"}
 
 
+rebuild_index_job()
+
 scheduler = BackgroundScheduler()
+scheduler.add_job(rebuild_index_job, "interval", hours=1)
 scheduler.add_job(check_all_podcasts, "interval", hours=24)
 scheduler.start()
