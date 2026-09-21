@@ -2,16 +2,15 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
 import psycopg2
-import requests
 import json
 from pipeline import sync_and_ingest, backfill_podcast
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 import os
-from requests.exceptions import ConnectionError
 from hybrid_search import rebuild_bm25_index, search_bm25, reciprocal_rank_fusion
+import anthropic
+from rag_graph import app_graph
 
 load_dotenv()
 
@@ -23,7 +22,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 
 class Question(BaseModel):
@@ -45,18 +44,13 @@ def get_connection():
     
 
 def stream_answer(prompt):
-    try:
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={"model": "llama3.2:1b", "prompt": prompt, "stream": True},
-            stream=True
-        )
-        for line in response.iter_lines():
-            if line:
-                data = json.loads(line)
-                yield data["response"]
-    except ConnectionError:
-        yield "Ollama is down"
+    with client.messages.stream(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": prompt}]
+    ) as stream:
+        for text in stream.text_stream:
+            yield text
             
 def stream_response(prompt, citations_list):
     yield json.dumps({"type": "citations", "data": citations_list}) + "\n"
@@ -96,54 +90,12 @@ def ask(payload: Question):
     if not payload.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     
-    question_embedding = model.encode(payload.question)
-    conn = get_connection()
-    cur = conn.cursor()
-    
-    query = """
-        SELECT chunks.id
-        FROM chunks
-        JOIN episodes ON chunks.episode_id = episodes.id
-        JOIN podcasts ON episodes.podcast_url = podcasts.url
-        WHERE podcasts.subscribed = TRUE
-    """
-    params = []
-
-    if payload.podcast_url:
-        query += " AND episodes.podcast_url = %s"
-        params.append(payload.podcast_url)
-
-    query += " ORDER BY embedding <=> %s::vector LIMIT 10"
-    params.append(str(question_embedding.tolist()))
-
-    cur.execute(query, tuple(params))
-    
-    vector_ids = [row[0] for row in cur.fetchall()]
-    bm25_ids = search_bm25(payload.question, top_k=10)
-    
-    fused_ids = reciprocal_rank_fusion(vector_ids, bm25_ids)[:5]
-    
-    if not fused_ids:
-        return StreamingResponse(
-            stream_response("No relevant context found.", []),
-            media_type="text/plain"
-        )
-    
-    cur.execute(
-        """
-        SELECT chunks.id, chunks.text, chunks.start_time, chunks.episode_id, episodes.title, episodes.url
-        FROM chunks
-        JOIN episodes ON chunks.episode_id = episodes.id
-        WHERE chunks.id IN %s
-        """,
-        (tuple(fused_ids),)
-    )
-    rows_by_id = {row[0]: row for row in cur.fetchall()}
-    rows = [rows_by_id[chunk_id] for chunk_id in fused_ids if chunk_id in rows_by_id]
-    
-    cur.close()
-    conn.close()
-    
+    result = app_graph.invoke({
+        "question": payload.question, "podcast_url": payload.podcast_url,
+        "sub_queries": [], "rows": [], "attempt": 0
+    })
+    rows = result["rows"]
+        
     context_string = ""
     citations_list = []
     for chunk_id, text, start_time, episode_id, title, episode_url in rows:
