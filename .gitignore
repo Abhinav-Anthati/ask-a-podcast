@@ -1,9 +1,12 @@
 .env
 .venv
+.venv/
 *.mp3
 *.json
-/episodes
-/transcripts
+episodes/
+transcripts/
 .DS_Store
 __pycache__/
 *.pyc
+node_modules/
+.next/

@@ -1,5 +1,9 @@
+"""FastAPI app for Ask-a-Podcast, a question-answering system over podcast transcripts."""
+
 import os
 
+# Force single-threaded CPU math to avoid a segfault in torch's OpenMP
+# thread pool during embedding calls. See numpy<2 pin in requirements.txt.
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -13,7 +17,7 @@ import json
 from pipeline import sync_and_ingest, backfill_podcast
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
-from hybrid_search import rebuild_bm25_index, search_bm25, reciprocal_rank_fusion
+from hybrid_search import rebuild_bm25_index
 import anthropic
 from rag_graph import app_graph
 
@@ -30,6 +34,8 @@ app.add_middleware(
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 
+# --- Request models ---
+
 class Question(BaseModel):
     question: str
     podcast_url: str | None = None
@@ -37,6 +43,8 @@ class Question(BaseModel):
 class FeedURL(BaseModel):
     feed_url: str
 
+
+# --- Helpers ---
 
 def get_connection():
     return psycopg2.connect(
@@ -49,6 +57,7 @@ def get_connection():
     
 
 def stream_answer(prompt):
+    """Streams Claude's response to `prompt`, yielding plain text pieces."""
     with client.messages.stream(
         model="claude-haiku-4-5-20251001",
         max_tokens=1024,
@@ -58,12 +67,18 @@ def stream_answer(prompt):
             yield text
             
 def stream_response(prompt, citations_list):
+    """Wraps stream_answer into NDJSON lines: one "citations" event first
+    (already known before generation starts), then "token" events per piece.
+    """
     yield json.dumps({"type": "citations", "data": citations_list}) + "\n"
     for piece in stream_answer(prompt):
         yield json.dumps({"type": "token", "text": piece}) + "\n"
 
 
+# --- Scheduled jobs ---
+
 def check_all_podcasts():
+    """Daily scheduled job: syncs every subscribed podcast for new episodes."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -83,6 +98,10 @@ def check_all_podcasts():
     
     
 def rebuild_index_job():
+    """Hourly scheduled job: rebuilds the in-memory BM25 index from
+    current chunk text, so newly ingested content becomes searchable
+    via keyword search.
+    """
     conn = get_connection()
     cur = conn.cursor()
     rebuild_bm25_index(cur)
@@ -90,8 +109,15 @@ def rebuild_index_job():
     conn.close()
     
 
+# --- Routes ---
+
 @app.post("/ask")
 def ask(payload: Question):
+    """Answers a question using the transcripts of all subscribed podcasts, or a specific podcast if provided.
+
+    Returns a streaming response with JSON lines: first a "citations" event with the relevant
+    context, followed by "token" events with the answer.
+    """
     if not payload.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     
@@ -127,11 +153,13 @@ def ask(payload: Question):
 
 @app.post("/podcasts")
 def subscribe(payload: FeedURL):
+    """Subscribes to a podcast feed and starts syncing/ingesting new episodes."""
     return StreamingResponse(sync_and_ingest(payload.feed_url),media_type="text/plain")
 
 
 @app.get("/podcasts")
 def get_podcast():
+    """Returns a list of subscribed podcasts with their title, URL, and episode count."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -160,12 +188,14 @@ def get_podcast():
 
 @app.post("/podcasts/backfill")
 def backfill(payload: FeedURL, background_tasks: BackgroundTasks):
+    """Backfills a podcast feed by repeatedly syncing and ingesting until no new episodes are found."""
     background_tasks.add_task(backfill_podcast, payload.feed_url)
     return {"status": "backfilling"}
 
 
 @app.delete("/podcasts")
 def unsubscribe(payload: FeedURL):
+    """Unsubscribes from a podcast feed and stops syncing new episodes."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -177,6 +207,8 @@ def unsubscribe(payload: FeedURL):
     conn.close()
     return {"status": "unsubscribed"}
 
+
+# --- Scheduler startup (runs at import time) ---
 
 rebuild_index_job()
 

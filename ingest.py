@@ -1,7 +1,8 @@
+"""Ingests podcast transcripts and creates embeddings for each chunk."""
+
 import json
 import psycopg2
 from sentence_transformers import SentenceTransformer
-import requests
 from tracing import tracer
 from dotenv import load_dotenv
 import os
@@ -10,10 +11,19 @@ load_dotenv()
 
 
 def count_tokens(text, tokenizer):
+    """Returns the number of tokens `text` encodes to under `tokenizer`."""
     return len(tokenizer.encode(text))
 
 
 def chunk_transcript(transcript, episode_id, tokenizer, target_tokens=200, overlap_tokens=40):
+    """Splits a transcript into overlapping chunks at segment boundaries.
+
+    target_tokens=200 leaves headroom under all-MiniLM-L6-v2's 256-token
+    limit, which it silently truncates past rather than erroring on.
+
+    Returns:
+        list[dict]: each with 'episode_id', 'text', 'start_time', 'end_time'.
+    """
     chunks = []
     current_segments = []
     current_token_count = 0
@@ -56,6 +66,9 @@ def chunk_transcript(transcript, episode_id, tokenizer, target_tokens=200, overl
 
 
 def ingest_all():
+    """Legacy manual backfill: ingests any transcript not yet in the DB.
+    Not used by the live pipeline (see pipeline.py's sync_and_ingest).
+    """
     model = SentenceTransformer("all-MiniLM-L6-v2")
     tokenizer = model.tokenizer
 
@@ -106,21 +119,20 @@ def ingest_all():
 
 
 def ingest_episode(episode, model, cur):
+    """Chunks and embeds one episode's transcript into `chunks`.
+    Does not commit/close, caller owns the transaction.
+    """
     tokenizer = model.tokenizer
 
     with open(f"transcripts/{episode['guid']}.json") as f:
         transcript = json.load(f)
 
-    print("Chunking...")
     with tracer.start_as_current_span("chunk_transcript"):
         chunks = chunk_transcript(transcript, episode["guid"], tokenizer)
-    print(f"Chunked into {len(chunks)} pieces")
 
     texts = [c["text"] for c in chunks]
-    print("Embedding...")
     with tracer.start_as_current_span("model.encode"):
         embeddings = model.encode(texts)
-    print("Embedded")
 
     for chunk, embedding in zip(chunks, embeddings):
         cur.execute(
@@ -131,7 +143,7 @@ def ingest_episode(episode, model, cur):
             (str(embedding.tolist()), chunk["text"], chunk["start_time"], chunk["end_time"], chunk["episode_id"])
         )
 
-    print(f"{episode['guid']}: inserted {len(chunks)} chunks")
+    print(f"Ingested {episode['title']}, inserted {len(chunks)} chunks")
     
 
 if __name__ == "__main__":

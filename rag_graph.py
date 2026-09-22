@@ -1,5 +1,9 @@
+"""RAG graph for Ask-a-Podcast."""
+
 import os
 
+# Force single-threaded CPU math to avoid a segfault in torch's OpenMP
+# thread pool during embedding calls. See numpy<2 pin in requirements.txt.
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -25,13 +29,32 @@ def get_connection():
     )
 
 class RAGState(TypedDict):
+    """Shared state threaded through the graph.
+
+    question: current question being searched (may be rewritten by
+        rewrite(), which re-enters the graph from decompose()).
+    podcast_url: optional filter to scope search to one podcast.
+    sub_queries: set by decompose(); one or more search queries.
+    rows: set by retrieve(); (id, text, start_time, episode_id, title, url)
+        tuples for the top fused chunks.
+    attempt: retry counter; grade() forces "done" once it hits 2, so a
+        stubborn retrieve-grade-rewrite loop can't run forever.
+    """
     question: str
+    original_question: str
     podcast_url: str | None
     sub_queries: list
     rows: list
     attempt: int
 
 def decompose(state: RAGState) -> RAGState:
+    """Asks Claude whether the question needs splitting into multiple
+    search queries. Falls back to the original question on a bad
+    response (the model doesn't always return valid JSON).
+    """
+    if state["attempt"] == 0:
+        state["original_question"] = state["question"]
+
     prompt = f"""Does this question need multiple separate search queries to answer completely? Respond with ONLY a JSON list of strings which are the search queries needed. If one query suffices, return a list with just the original question.
 
     Question: {state['question']}
@@ -42,9 +65,17 @@ def decompose(state: RAGState) -> RAGState:
         state["sub_queries"] = json.loads(resp.content[0].text)
     except json.JSONDecodeError:
         state["sub_queries"] = [state["question"]]
+
+    if state["attempt"] > 0 and state["original_question"] not in state["sub_queries"]:
+        state["sub_queries"].append(state["original_question"])
+
     return state
 
 def retrieve(state: RAGState) -> RAGState:
+    """Runs hybrid search (vector + BM25, fused via RRF) for each
+    sub-query, merging results across sub-queries while preserving
+    fused rank order.
+    """
     conn = get_connection()
     cur = conn.cursor()
     ranked_ids = []
@@ -89,6 +120,10 @@ def retrieve(state: RAGState) -> RAGState:
     return state
 
 def grade(state: RAGState) -> str:
+    """Asks Claude whether the retrieved context can answer the question.
+    Returns "done" directly (no LLM call) if nothing was retrieved or
+    two rewrite attempts have already happened.
+    """
     if not state["rows"] or state["attempt"] >= 2:
         return "done"
     context = "\n".join(r[1] for r in state["rows"])
@@ -104,6 +139,10 @@ def grade(state: RAGState) -> str:
     return "done" if "yes" in resp.content[0].text.strip().lower() else "rewrite"
 
 def rewrite(state: RAGState) -> RAGState:
+    """Asks Claude to rewrite the question to be clearer/more specific for a search engine.
+    Return:
+        The updated state with the rewritten question.
+    """
     prompt = f"""Rewrite this question to be clearer/more specific for a search engine. Respond with ONLY the rewritten question.
 
     Original: {state['question']}
@@ -114,6 +153,11 @@ def rewrite(state: RAGState) -> RAGState:
     state["attempt"] += 1
     return state
 
+
+# Graph shape: decompose -> retrieve -> grade (conditional).
+# grade routes to END if the context looks sufficient, or to rewrite,
+# which loops back to decompose so a reformulated question gets a
+# fresh chance at splitting and retrieval.
 graph = StateGraph(RAGState)
 graph.add_node("decompose", decompose)
 graph.add_node("retrieve", retrieve)

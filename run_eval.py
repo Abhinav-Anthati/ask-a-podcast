@@ -1,3 +1,5 @@
+"""Evaluation script for Ask-a-Podcast using RAGAS."""
+
 from eval_dataset import test_questions
 from rag_graph import app_graph
 import anthropic, os

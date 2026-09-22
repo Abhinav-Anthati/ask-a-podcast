@@ -1,3 +1,6 @@
+"""Reconciles the transcripts/ directory with the episodes table in the database."""
+# This script ensures that the local transcript files match the episodes in the database.
+
 import os
 import glob
 from dotenv import load_dotenv
