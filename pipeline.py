@@ -1,3 +1,9 @@
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
 from download import sync_podcast
 from transcribe import transcribe_in_subprocess
 from ingest import ingest_episode
@@ -7,7 +13,6 @@ import json
 from tracing import tracer
 from concurrent.futures import ProcessPoolExecutor
 from dotenv import load_dotenv
-import os
 
 load_dotenv()
 
@@ -31,8 +36,6 @@ def sync_and_ingest(feed_url):
         else:
             yield json.dumps(update) + "\n"
 
-    conn.commit()
-
     yield json.dumps({"status": "downloaded", "count": len(episodes)}) + "\n"
 
     with ProcessPoolExecutor() as executor:
@@ -46,6 +49,11 @@ def sync_and_ingest(feed_url):
                 with open(out_name, "w") as f:
                     json.dump(result, f, indent=2)
                 yield json.dumps({"status": "transcribed", "episode": episode["guid"]}) + "\n"
+                
+                try:
+                    os.remove(episode["path"])
+                except OSError as e:
+                    print(f"Could not delete {episode['path']}: {e}")
 
                 with tracer.start_as_current_span("ingest_episode"):
                     ingest_episode(episode, embed_model, cur)

@@ -1,3 +1,9 @@
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,7 +13,6 @@ import json
 from pipeline import sync_and_ingest, backfill_podcast
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
-import os
 from hybrid_search import rebuild_bm25_index, search_bm25, reciprocal_rank_fusion
 import anthropic
 from rag_graph import app_graph

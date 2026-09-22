@@ -17,7 +17,7 @@ conn.close()
 
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-results = {"question": [], "answer": [], "contexts": [], "reference": []}
+results = {"question": [], "answer": [], "contexts": [], "reference": [], "answerable": []}
 
 for item in test_questions:
     graph_result = app_graph.invoke({
@@ -36,5 +36,6 @@ for item in test_questions:
     results["answer"].append(answer)
     results["contexts"].append(contexts)
     results["reference"].append(item["reference"])
+    results["answerable"].append(item["answerable"])
 
 print(results)

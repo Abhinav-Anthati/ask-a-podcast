@@ -1,4 +1,10 @@
-import os, json
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
+import json
 from typing import TypedDict
 import anthropic
 import psycopg2
@@ -8,6 +14,7 @@ from hybrid_search import search_bm25, reciprocal_rank_fusion
 from langgraph.graph import StateGraph, END
 
 load_dotenv()
+
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -40,7 +47,9 @@ def decompose(state: RAGState) -> RAGState:
 def retrieve(state: RAGState) -> RAGState:
     conn = get_connection()
     cur = conn.cursor()
-    all_ids = set()
+    ranked_ids = []
+    seen = set()
+
     for q in state["sub_queries"]:
         embedding = embed_model.encode(q)
         query = """
@@ -58,9 +67,13 @@ def retrieve(state: RAGState) -> RAGState:
         cur.execute(query, tuple(params))
         vector_ids = [r[0] for r in cur.fetchall()]
         bm25_ids = search_bm25(q, top_k=10)
-        all_ids.update(reciprocal_rank_fusion(vector_ids, bm25_ids)[:5])
 
-    if not all_ids:
+        for chunk_id in reciprocal_rank_fusion(vector_ids, bm25_ids)[:5]:
+            if chunk_id not in seen:
+                ranked_ids.append(chunk_id)
+                seen.add(chunk_id)
+
+    if not ranked_ids:
         state["rows"] = []
         cur.close(); conn.close()
         return state
@@ -69,8 +82,9 @@ def retrieve(state: RAGState) -> RAGState:
         SELECT chunks.id, chunks.text, chunks.start_time, chunks.episode_id, episodes.title, episodes.url
         FROM chunks JOIN episodes ON chunks.episode_id = episodes.id
         WHERE chunks.id IN %s
-    """, (tuple(all_ids),))
-    state["rows"] = cur.fetchall()
+    """, (tuple(ranked_ids),))
+    rows_by_id = {row[0]: row for row in cur.fetchall()}
+    state["rows"] = [rows_by_id[cid] for cid in ranked_ids if cid in rows_by_id]
     cur.close(); conn.close()
     return state
 
