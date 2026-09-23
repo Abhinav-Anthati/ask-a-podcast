@@ -61,6 +61,7 @@ def sync_and_ingest(feed_url):
                     result = future.result()
 
                 out_name = f"transcripts/{episode['guid']}.json"
+                os.makedirs("transcripts", exist_ok=True)
                 with open(out_name, "w") as f:
                     json.dump(result, f, indent=2)
                 yield json.dumps({"status": "transcribed", "episode": episode["title"]}) + "\n"

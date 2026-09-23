@@ -4,6 +4,7 @@ import feedparser
 import requests
 from requests import RequestException
 from tracing import tracer
+import os
 
 def get_episodes(feed):
     """Extracts episode metadata from a parsed feedparser feed object.
@@ -25,6 +26,7 @@ def get_episodes(feed):
 
 def download_episode(audio_url: str, output_path: str):
     """Downloads single episode at audio_url to output_path."""
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     response = requests.get(audio_url, stream=True)
     with open(output_path, "wb") as f:
         for chunk in response.iter_content(chunk_size=8192):
