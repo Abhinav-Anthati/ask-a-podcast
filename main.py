@@ -8,7 +8,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -20,6 +20,9 @@ from dotenv import load_dotenv
 from hybrid_search import rebuild_bm25_index
 import anthropic
 from rag_graph import app_graph
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 load_dotenv()
 
@@ -30,6 +33,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
@@ -58,13 +65,15 @@ def get_connection():
 
 def stream_answer(prompt):
     """Streams Claude's response to `prompt`, yielding plain text pieces."""
-    with client.messages.stream(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}]
-    ) as stream:
-        for text in stream.text_stream:
-            yield text
+    try:
+        with client.messages.stream(
+            model="claude-haiku-4-5-20251001", max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}]
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+    except anthropic.APIError as e:
+        yield f"\n\n[Error: couldn't generate a response - {e}]"
             
 def stream_response(prompt, citations_list):
     """Wraps stream_answer into NDJSON lines: one "citations" event first
@@ -112,7 +121,8 @@ def rebuild_index_job():
 # --- Routes ---
 
 @app.post("/ask")
-def ask(payload: Question):
+@limiter.limit("10/minute")
+def ask(request: Request, payload: Question):
     """Answers a question using the transcripts of all subscribed podcasts, or a specific podcast if provided.
 
     Returns a streaming response with JSON lines: first a "citations" event with the relevant
@@ -152,7 +162,8 @@ def ask(payload: Question):
     
 
 @app.post("/podcasts")
-def subscribe(payload: FeedURL):
+@limiter.limit("5/hour")
+def subscribe(request: Request, payload: FeedURL):
     """Subscribes to a podcast feed and starts syncing/ingesting new episodes."""
     return StreamingResponse(sync_and_ingest(payload.feed_url),media_type="text/plain")
 

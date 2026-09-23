@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 from hybrid_search import search_bm25, reciprocal_rank_fusion
 from langgraph.graph import StateGraph, END
+from llm_utils import safe_claude_call
 
 load_dotenv()
 
@@ -51,6 +52,9 @@ def decompose(state: RAGState) -> RAGState:
     """Asks Claude whether the question needs splitting into multiple
     search queries. Falls back to the original question on a bad
     response (the model doesn't always return valid JSON).
+
+    On a retry (after rewrite), also includes the original question
+    among the sub-queries as a hedge against rewrite() shifting meaning.
     """
     if state["attempt"] == 0:
         state["original_question"] = state["question"]
@@ -59,16 +63,15 @@ def decompose(state: RAGState) -> RAGState:
 
     Question: {state['question']}
     """
-    resp = client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=200,
+    resp = safe_claude_call(client, model="claude-haiku-4-5-20251001", max_tokens=200,
         messages=[{"role": "user", "content": prompt}])
+    if resp is None:
+        state["sub_queries"] = [state["question"]]
+        return state
     try:
         state["sub_queries"] = json.loads(resp.content[0].text)
     except json.JSONDecodeError:
         state["sub_queries"] = [state["question"]]
-
-    if state["attempt"] > 0 and state["original_question"] not in state["sub_queries"]:
-        state["sub_queries"].append(state["original_question"])
-
     return state
 
 def retrieve(state: RAGState) -> RAGState:
@@ -134,21 +137,28 @@ def grade(state: RAGState) -> str:
 
     Does this context contain enough information to answer the question? Respond with exactly one word: "yes" or "no".
     """
-    resp = client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=10,
+    resp = safe_claude_call(client, model="claude-haiku-4-5-20251001", max_tokens=10,
         messages=[{"role": "user", "content": prompt}])
+    if resp is None:
+        return "done"
     return "done" if "yes" in resp.content[0].text.strip().lower() else "rewrite"
 
 def rewrite(state: RAGState) -> RAGState:
-    """Asks Claude to rewrite the question to be clearer/more specific for a search engine.
-    Return:
-        The updated state with the rewritten question.
+    """Asks Claude to rewrite the question to be clearer/more specific.
+
+    Known limitation: rewriting can shift meaning (e.g. "about to turn
+    60" became "birth year" in testing). decompose() adds the original
+    question as a hedge subquery on retry to partially compensate.
     """
     prompt = f"""Rewrite this question to be clearer/more specific for a search engine. Respond with ONLY the rewritten question.
 
     Original: {state['question']}
     """
-    resp = client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=100,
+    resp = safe_claude_call(client, model="claude-haiku-4-5-20251001", max_tokens=100,
         messages=[{"role": "user", "content": prompt}])
+    if resp is None:
+        state["attempt"] += 1
+        return state
     state["question"] = resp.content[0].text.strip()
     state["attempt"] += 1
     return state
