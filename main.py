@@ -122,7 +122,7 @@ def rebuild_index_job():
 # --- Routes ---
 
 @app.post("/ask")
-@limiter.limit("10/minute")
+@limiter.limit("10/hour")
 def ask(request: Request, payload: Question):
     """Answers a question using the transcripts of all subscribed podcasts, or a specific podcast if provided.
 
@@ -218,6 +218,7 @@ def backfill(payload: FeedURL, background_tasks: BackgroundTasks):
 
 
 @app.delete("/podcasts")
+@limiter.limit("5/hour")
 def unsubscribe(payload: FeedURL):
     """Unsubscribes from a podcast feed and stops syncing new episodes."""
     conn = get_connection()
