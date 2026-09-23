@@ -219,7 +219,7 @@ def backfill(payload: FeedURL, background_tasks: BackgroundTasks):
 
 @app.delete("/podcasts")
 @limiter.limit("5/hour")
-def unsubscribe(payload: FeedURL):
+def unsubscribe(request: Request, payload: FeedURL):
     """Unsubscribes from a podcast feed and stops syncing new episodes."""
     conn = get_connection()
     cur = conn.cursor()
