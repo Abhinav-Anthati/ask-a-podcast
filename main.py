@@ -23,6 +23,7 @@ from rag_graph import app_graph
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from starlette.background import BackgroundTask
 
 load_dotenv()
 
@@ -164,8 +165,20 @@ def ask(request: Request, payload: Question):
 @app.post("/podcasts")
 @limiter.limit("5/hour")
 def subscribe(request: Request, payload: FeedURL):
-    """Subscribes to a podcast feed and starts syncing/ingesting new episodes."""
-    return StreamingResponse(sync_and_ingest(payload.feed_url),media_type="text/plain")
+    """Subscribes to a podcast feed and starts syncing/ingesting new episodes.
+    If this is a brand new podcast (no existing episodes), automatically
+    backfills its full history in the background after the initial sync,
+    rather than leaving that to the slow daily scheduler.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM episodes WHERE podcast_url = %s", (payload.feed_url,))
+    is_new = cur.fetchone()[0] == 0
+    cur.close()
+    conn.close()
+
+    background = BackgroundTask(backfill_podcast, payload.feed_url) if is_new else None
+    return StreamingResponse(sync_and_ingest(payload.feed_url), media_type="text/plain", background=background)
 
 
 @app.get("/podcasts")
