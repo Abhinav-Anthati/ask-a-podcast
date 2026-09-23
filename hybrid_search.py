@@ -25,10 +25,19 @@ def rebuild_bm25_index(cur):
     rows = cur.fetchall()
     chunk_ids = [row[0] for row in rows]
     tokenized_docs = [tokenize(row[1]) for row in rows]
+
+    if not tokenized_docs:
+        bm25_index = None
+        return
+
     bm25_index = BM25Okapi(tokenized_docs)
+
 
 def search_bm25(query, top_k=10):
     """Searches the BM25 index for the top_k most relevant chunk IDs to the query."""
+    if bm25_index is None:
+        return []
+
     tokenized_query = tokenize(query)
     scores = bm25_index.get_scores(tokenized_query)
     ranked = sorted(zip(chunk_ids, scores), key=lambda x: x[1], reverse=True)
